@@ -1049,10 +1049,10 @@ def _crb_accumulate(
 def _M(
   # Model:
   dof_bodyid: wp.array[int],
-  dof_parentid: wp.array[int],
   dof_armature: wp.array2d[float],
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
   # Data in:
   cdof_in: wp.array2d[wp.spatial_vector],
   crb_in: wp.array2d[vec10],
@@ -1061,19 +1061,21 @@ def _M(
 ):
   worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
-  madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
-
-  # init M(i,i) with armature inertia
-  M_out[worldid, madr_ij] = dof_armature[worldid % dof_armature.shape[0], dofid]
 
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
 
-  # sparse backward pass over ancestors
-  while dofid >= 0:
-    M_out[worldid, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
-    madr_ij -= 1
-    dofid = dof_parentid[dofid]
+  # fill this dof's CSR row only: rows can be shorter than the ancestor chain (e.g. free joints on
+  # simple bodies are diagonal-only), and writing past the row races with the sibling dofs' threads
+  rowadr = M_rowadr[dofid]
+  for k in range(M_rownnz[dofid]):
+    madr_ij = rowadr + k
+    dofid_j = M_colind[madr_ij]
+    Mij = float(0.0)
+    if dofid_j == dofid:
+      # init M(i,i) with armature inertia
+      Mij = dof_armature[worldid % dof_armature.shape[0], dofid]
+    M_out[worldid, madr_ij] = Mij + wp.dot(cdof_in[worldid, dofid_j], buf)
 
 
 @event_scope
@@ -1093,7 +1095,7 @@ def crb(m: Model, d: Data):
   wp.launch(
     _M,
     dim=(d.nworld, m.nv),
-    inputs=[m.dof_bodyid, m.dof_parentid, m.dof_armature, m.M_rownnz, m.M_rowadr, d.cdof, d.crb],
+    inputs=[m.dof_bodyid, m.dof_armature, m.M_rownnz, m.M_rowadr, m.M_colind, d.cdof, d.crb],
     outputs=[d.M],
   )
 

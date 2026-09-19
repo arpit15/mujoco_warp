@@ -88,7 +88,7 @@ def _make_warp_step_fn(mjm, m, d, graph, ctrls=None):
       graph = _compile_step(m, d) if wp.get_device().is_cuda else None
     wp.copy(d.ctrl, wp.array([mjd.ctrl.astype(np.float32)]))
     wp.copy(d.act, wp.array([mjd.act.astype(np.float32)]))
-    wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied.astype(np.float32)]))
+    wp.copy(d.xfrc_applied, wp.array([mjd.xfrc_applied], dtype=wp.spatial_vector))
     wp.copy(d.qpos, wp.array([mjd.qpos.astype(np.float32)]))
     wp.copy(d.qvel, wp.array([mjd.qvel.astype(np.float32)]))
     wp.copy(d.time, wp.array([mjd.time], dtype=wp.float32))
@@ -126,7 +126,7 @@ def _run_viser_viewer(mjm, mjd, step_fn):
 
 def _run_passive_viewer(mjm, mjd, step_fn):
   with mujoco.viewer.launch_passive(mjm, mjd, key_callback=key_callback) as viewer:
-    while True:
+    while viewer.is_running():
       start = time.time()
       if _VIEWER_GLOBAL_STATE["running"] or _VIEWER_GLOBAL_STATE["step_once"]:
         _VIEWER_GLOBAL_STATE["step_once"] = False
@@ -144,7 +144,7 @@ def _main(argv: Sequence[str]) -> None:
   elif len(argv) > 2:
     raise app.UsageError("Too many command-line arguments.")
 
-  wp.config.quiet = flags.FLAGS["verbosity"].value < 1
+  wp.config.log_level = wp.LOG_WARNING if flags.FLAGS["verbosity"].value < 1 else wp.LOG_INFO
   wp.init()
 
   mjm = cli.load_model(epath.Path(argv[1]))

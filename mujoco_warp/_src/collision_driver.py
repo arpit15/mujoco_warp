@@ -43,7 +43,7 @@ from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 # Corresponding table to MuJoCo's mjCOLLISIONFUNC table in engine_collision_driver.c
 MJ_COLLISION_TABLE = {
@@ -375,7 +375,7 @@ def _add_geom_pair(
 
 @cache_kernel
 def _sap_project(opt_broadphase: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def sap_project(
     # Model:
     ngeom: int,
@@ -432,7 +432,7 @@ def _sap_broadphase(
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     ngeom: int,
@@ -540,7 +540,7 @@ def _sap_broadphase(
 
 @cache_kernel
 def _segmented_sort(tile_size: int):
-  @wp.kernel(module="unique")
+  @wp.kernel(module="unique", grid_stride=False)
   def segmented_sort(
     # In:
     projection_lower_in: wp.array2d[float],
@@ -693,7 +693,7 @@ def _nxn_broadphase(
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     geom_type: wp.array[int],

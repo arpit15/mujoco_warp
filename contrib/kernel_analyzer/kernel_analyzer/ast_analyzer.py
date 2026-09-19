@@ -120,6 +120,29 @@ class MissingBatchModulo(Issue):
     return f'"{self.param_name}" is a *-dimensioned field; first index must use "% {self.param_name}.shape[0]"'
 
 
+@dataclasses.dataclass
+class DirectWpArrayForbidden(Issue):
+  attr_name: str
+  class_name: str
+
+  def __str__(self):
+    return f'"{self.attr_name}" in class "{self.class_name}" must use array(...) annotation instead of direct wp.array.'
+
+
+@dataclasses.dataclass
+class AmbiguousPrecedence(Issue):
+  description: str
+
+  def __str__(self):
+    return f"ambiguous operator precedence: {self.description}"
+
+
+@dataclasses.dataclass
+class BitwiseInversionInBoolean(Issue):
+  def __str__(self):
+    return 'bitwise NOT (~) used as boolean condition; use "not (...)", "!= 0", or explicit flag checks'
+
+
 # TODO(team): add argument order analyzer.
 # this one is tricky because just verifying order does not tell you if the arguments
 # match the parameter signature.
@@ -184,6 +207,44 @@ def _get_arg_expected_comment(param_source: str, param_out: bool) -> str:
   return expected_comment
 
 
+def _is_parenthesized(source_lines: List[str], node: ast.AST) -> bool:
+  """Check if an AST node is immediately enclosed in parentheses."""
+  # Scan backward for '('
+  start_l, start_c = node.lineno - 1, node.col_offset - 1
+  has_open = False
+  while start_l >= 0:
+    line = source_lines[start_l]
+    while start_c >= 0:
+      ch = line[start_c]
+      if not ch.isspace() and ch != "\\":
+        has_open = ch == "("
+        break
+      start_c -= 1
+    if has_open or (start_c >= 0 and line[start_c] not in (" ", "\t", "\\")):
+      break
+    start_l -= 1
+    if start_l >= 0:
+      start_c = len(source_lines[start_l]) - 1
+
+  # Scan forward for ')'
+  end_l, end_c = node.end_lineno - 1, node.end_col_offset
+  has_close = False
+  while end_l < len(source_lines):
+    line = source_lines[end_l]
+    while end_c < len(line):
+      ch = line[end_c]
+      if not ch.isspace() and ch != "\\":
+        has_close = ch == ")"
+        break
+      end_c += 1
+    if has_close or (end_c < len(line) and line[end_c] not in (" ", "\t", "\\")):
+      break
+    end_l += 1
+    end_c = 0
+
+  return has_open and has_close
+
+
 def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
   """Parses Python code and finds functions with unsorted simple parameters."""
   logging.info(f"Analyzing {filename}...")
@@ -193,15 +254,15 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
   field_info = {}
   star_fields = set()  # fields with "*" first dimension
 
-  for field, typ in type_classes["Model"]:
+  for field, typ in type_classes.get("Model", []):
     if field == "opt":
-      for sfield, styp in type_classes["Option"]:
+      for sfield, styp in type_classes.get("Option", []):
         full_name = field + "_" + sfield
         field_info[full_name] = ("Model", styp, len(field_info))
         if styp.startswith('array("*"'):
           star_fields.add(full_name)
     elif field == "stat":
-      for sfield, styp in type_classes["Statistic"]:
+      for sfield, styp in type_classes.get("Statistic", []):
         full_name = field + "_" + sfield
         field_info[full_name] = ("Model", styp, len(field_info))
         if styp.startswith('array("*"'):
@@ -211,7 +272,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       if typ.startswith('array("*"'):
         star_fields.add(field)
 
-  for field, typ in type_classes["Data"]:
+  for field, typ in type_classes.get("Data", []):
     if field == "efc":
       for sfield, styp in type_classes["Constraint"]:
         field_info[field + "_" + sfield] = ("Data", styp, len(field_info))
@@ -228,6 +289,13 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     return []
 
   issues: List[Issue] = []
+  for cls_name in ("Model", "Data", "Option", "Statistic", "Constraint"):
+    if cls_name in type_classes:
+      for attr_name, attr_type in type_classes[cls_name]:
+        if attr_type.startswith("wp.array"):
+          dummy_node = ast.AST()
+          dummy_node.lineno = 1
+          issues.append(DirectWpArrayForbidden(dummy_node, "", attr_name, cls_name))
   source_lines = source.splitlines()
 
   def _is_kernel(name: str) -> bool:
@@ -474,6 +542,37 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
   for node in ast.iter_child_nodes(tree):
     if isinstance(node, ast.FunctionDef):
       _analyze_function(node, is_nested=False)
+
+  # Check operator precedence disambiguation throughout the file
+  for sub_node in ast.walk(tree):
+    # 1. Compare with bitwise operator
+    if isinstance(sub_node, ast.Compare):
+      for child in [sub_node.left] + sub_node.comparators:
+        if isinstance(child, ast.BinOp) and isinstance(child.op, (ast.BitAnd, ast.BitOr, ast.BitXor)):
+          if not _is_parenthesized(source_lines, child):
+            issues.append(AmbiguousPrecedence(child, "", "parenthesize bitwise operation inside comparison"))
+
+    # 2. Logical not with bitwise operator
+    elif isinstance(sub_node, ast.UnaryOp) and isinstance(sub_node.op, ast.Not):
+      if isinstance(sub_node.operand, ast.BinOp) and isinstance(sub_node.operand.op, (ast.BitAnd, ast.BitOr, ast.BitXor)):
+        if not _is_parenthesized(source_lines, sub_node.operand):
+          issues.append(AmbiguousPrecedence(sub_node, "", 'parenthesize bitwise operation after "not"'))
+
+    # 3. Bitwise shift inside bitwise AND/OR/XOR
+    elif isinstance(sub_node, ast.BinOp) and isinstance(sub_node.op, (ast.BitAnd, ast.BitOr, ast.BitXor)):
+      for child in (sub_node.left, sub_node.right):
+        if isinstance(child, ast.BinOp) and isinstance(child.op, (ast.LShift, ast.RShift)):
+          if not _is_parenthesized(source_lines, child):
+            issues.append(AmbiguousPrecedence(child, "", "parenthesize bitwise shift inside bitwise operation"))
+
+    # 4. Bitwise NOT (~) in boolean condition
+    elif isinstance(sub_node, (ast.If, ast.While, ast.Assert)):
+      tests = [sub_node.test]
+      if isinstance(sub_node.test, ast.BoolOp):
+        tests = sub_node.test.values
+      for t in tests:
+        if isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Invert):
+          issues.append(BitwiseInversionInBoolean(t, ""))
 
   # skip issues in ignored lines
   ignore_lines = set()

@@ -423,6 +423,99 @@ class TestBatchModulo(absltest.TestCase):
     modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
     self.assertEqual(len(modulo_issues), 0, modulo_issues)
 
+  def test_direct_wp_array_forbidden(self):
+    """Direct wp.array in Model, Data, Option, or Statistic must raise an issue."""
+    type_code = """
+class Option:
+  tolerance: float
+  bad_opt_array: wp.array[float]
+
+class Statistic:
+  mean_pos: array("nv", float)
+  bad_stat_array: wp.array2d[int]
+
+class Model:
+  nv: int
+  qpos0: array("nq", float)
+  bad_model_1: wp.array[float]
+  bad_model_2: wp.array3d[int]
+  opt: Option
+  stat: Statistic
+
+class Data:
+  qpos: array("nworld", "nq", float)
+  bad_data_1: wp.array[float]
+
+class Constraint:
+  pos: array("nworld", "njmax", float)
+  bad_constraint_1: wp.array[float]
+"""
+    kernel_code = "pass"
+    issues = ast_analyzer.analyze(kernel_code, "test.py", type_code)
+    forbidden_issues = [i for i in issues if isinstance(i, ast_analyzer.DirectWpArrayForbidden)]
+    self.assertEqual(len(forbidden_issues), 6, forbidden_issues)
+
+    flagged_attrs = {f"{i.class_name}.{i.attr_name}" for i in forbidden_issues}
+    expected_attrs = {
+      "Model.bad_model_1",
+      "Model.bad_model_2",
+      "Data.bad_data_1",
+      "Option.bad_opt_array",
+      "Statistic.bad_stat_array",
+      "Constraint.bad_constraint_1",
+    }
+    self.assertEqual(flagged_attrs, expected_attrs)
+
+  def test_ambiguous_precedence(self):
+    bad_code = """
+import warp as wp
+
+def foo(a: int, b: int, c: int):
+  x = a & b == 0
+  y = not a & b
+  z = a & b << c
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "")
+    prec_issues = [i for i in issues if isinstance(i, ast_analyzer.AmbiguousPrecedence)]
+    self.assertEqual(len(prec_issues), 3)
+
+    good_code = """
+import warp as wp
+
+def foo(a: int, b: int, c: int):
+  x = (a & b) == 0
+  y = not (a & b)
+  z = a & (b << c)
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "")
+    prec_issues = [i for i in issues if isinstance(i, ast_analyzer.AmbiguousPrecedence)]
+    self.assertEqual(len(prec_issues), 0)
+
+  def test_bitwise_inversion_in_boolean(self):
+    bad_code = """
+def foo(a: int):
+  if ~a:
+    pass
+  while ~a:
+    pass
+  assert ~a
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "")
+    inv_issues = [i for i in issues if isinstance(i, ast_analyzer.BitwiseInversionInBoolean)]
+    self.assertEqual(len(inv_issues), 3)
+
+    good_code = """
+def foo(a: int):
+  if not a:
+    pass
+  if ~a != 0:
+    pass
+  assert (a & 1) != 0
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "")
+    inv_issues = [i for i in issues if isinstance(i, ast_analyzer.BitwiseInversionInBoolean)]
+    self.assertEqual(len(inv_issues), 0)
+
 
 if __name__ == "__main__":
   absltest.main()

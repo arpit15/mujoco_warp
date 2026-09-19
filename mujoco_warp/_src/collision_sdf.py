@@ -34,7 +34,7 @@ from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import halton
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 # Collision sensors scatter contacts by geomcollisionid into 8 slots per geom pair
 # (see _sensor_collision in sensor.py); contacts beyond that cannot feed sensors.
@@ -758,6 +758,7 @@ def _sdf_narrowphase(
   geom_friction: wp.array2d[wp.vec3],
   geom_margin: wp.array2d[float],
   geom_gap: wp.array2d[float],
+  geom_adhesion: wp.array2d[float],
   mesh_vertadr: wp.array[int],
   mesh_vertnum: wp.array[int],
   mesh_faceadr: wp.array[int],
@@ -781,6 +782,7 @@ def _sdf_narrowphase(
   pair_solimp: wp.array2d[vec5],
   pair_margin: wp.array2d[float],
   pair_gap: wp.array2d[float],
+  pair_adhesion: wp.array2d[float],
   pair_friction: wp.array2d[vec5],
   plugin: wp.array[int],
   plugin_attr: wp.array[vec_pluginattr],
@@ -811,6 +813,7 @@ def _sdf_narrowphase(
   contact_worldid_out: wp.array[int],
   contact_type_out: wp.array[int],
   contact_geomcollisionid_out: wp.array[int],
+  contact_adhesion_out: wp.array[float],
   nacon_out: wp.array[int],
 ):
   i, contact_tid = wp.tid()
@@ -824,7 +827,7 @@ def _sdf_narrowphase(
   if type2 != GeomType.SDF:
     return
   worldid = collision_worldid_in[contact_tid]
-  _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+  _, margin, gap, condim, friction, solref, solreffriction, solimp, adhesion = contact_params(
     geom_condim,
     geom_priority,
     geom_solmix,
@@ -833,12 +836,14 @@ def _sdf_narrowphase(
     geom_friction,
     geom_margin,
     geom_gap,
+    geom_adhesion,
     pair_dim,
     pair_solref,
     pair_solreffriction,
     pair_solimp,
     pair_margin,
     pair_gap,
+    pair_adhesion,
     pair_friction,
     collision_pair_in,
     collision_pairid_in,
@@ -993,6 +998,7 @@ def _sdf_narrowphase(
     solref,
     solreffriction,
     solimp,
+    adhesion,
     geoms,
     pairid,
     worldid,
@@ -1010,6 +1016,7 @@ def _sdf_narrowphase(
     contact_worldid_out,
     contact_type_out,
     contact_geomcollisionid_out,
+    contact_adhesion_out,
     nacon_out,
   )
 
@@ -1036,6 +1043,7 @@ def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
+      m.geom_adhesion,
       m.mesh_vertadr,
       m.mesh_vertnum,
       m.mesh_faceadr,
@@ -1059,6 +1067,7 @@ def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
       m.pair_solimp,
       m.pair_margin,
       m.pair_gap,
+      m.pair_adhesion,
       m.pair_friction,
       m.plugin,
       m.plugin_attr,
@@ -1088,6 +1097,7 @@ def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,
+      d.contact.adhesion,
       d.nacon,
     ],
   )
